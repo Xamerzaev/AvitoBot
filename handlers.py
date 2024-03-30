@@ -9,7 +9,7 @@ import phonenumbers
 
 from bot_setup import dp, bot, Dispatcher
 from config import MODERATOR_CHAT_ID, TELEGRAM_CHANNEL_ID
-from states import AdForm
+from states import AdForm, ModeratorFSM
 
 import logging
 
@@ -132,6 +132,19 @@ async def ad_price(message: types.Message, state: FSMContext):
     await message.answer("Введите контактную информацию для связи:")
 
 
+async def send_ad_for_moderation(ad_preview, markup, photos=None):
+    # Устанавливаем состояние для модератора
+    state = Dispatcher.get_current().current_state(chat=MODERATOR_CHAT_ID, user=MODERATOR_CHAT_ID)
+    await state.set_state(ModeratorFSM.waiting_for_moderation)
+    
+    # Если есть фотографии, отправляем их перед текстом объявления
+    if photos:
+        media_group = [InputMediaPhoto(photo_id) for photo_id in photos]
+        await bot.send_media_group(MODERATOR_CHAT_ID, media_group)
+    
+    await bot.send_message(MODERATOR_CHAT_ID, ad_preview, reply_markup=markup)
+
+
 @dp.message_handler(state=AdForm.waiting_for_contact_info)
 async def ad_contact_info(message: types.Message, state: FSMContext):
     try:
@@ -152,10 +165,7 @@ async def ad_contact_info(message: types.Message, state: FSMContext):
         InlineKeyboardButton("Отклонить", callback_data=f"reject_{message.from_user.id}")
     )
 
-    if 'photos' in data:
-        media_group = [InputMediaPhoto(photo_id) for photo_id in data['photos']]
-        await bot.send_media_group(MODERATOR_CHAT_ID, media_group)
-    await bot.send_message(MODERATOR_CHAT_ID, ad_preview, reply_markup=markup)
+    await send_ad_for_moderation(ad_preview, markup, photos=data.get('photos'))
     await message.answer("Ваше объявление успешно отправлено на модерацию.\n"
                          "Чтобы подать еще одно объявление, нажмите /start",
                          reply_markup=types.ReplyKeyboardRemove())
@@ -178,6 +188,7 @@ async def publish_ad(callback_query: types.CallbackQuery, ad_data, state: FSMCon
         if 'description' in ad_data and ad_data['description'].strip():
             marketing_text_parts.append(f"📄 Описание: {ad_data['description']}")
 
+        user_mention = f"[Пользователь](tg://user?id={user_id})"
         marketing_text_parts.extend([
             f"💰 Цена: {ad_data['price']} ₽",
             f"📞 Контакт: {ad_data['contact_info']}",
@@ -207,16 +218,14 @@ async def publish_ad(callback_query: types.CallbackQuery, ad_data, state: FSMCon
         except Exception as e:
             logger.error(f"Не удалось удалить сообщение модерации для user_id={user_id}. Исключение: {e}")
         await state.finish()
+        user_state = Dispatcher.get_current().current_state(chat=user_id, user=user_id)
+        await user_state.finish()
 
 
-@dp.callback_query_handler(lambda c: c.data and (c.data.startswith('approve_') or c.data.startswith('reject_')))
+@dp.callback_query_handler(lambda c: c.data.startswith('approve_') or c.data.startswith('reject_'), state=ModeratorFSM.waiting_for_moderation)
 async def process_ad_decision(callback_query: types.CallbackQuery):
-    action, user_id_str = callback_query.data.split('_')
-    if len(callback_query.data.split('_')) != 2:
-        logger.error(f"Unexpected callback_data format: {callback_query.data}")
-        return  # Выходим из функции, если формат данных не соответствует ожидаемому
-
-    user_id = int(user_id_str)
+    user_id = callback_query.data.split('_')[1]
+    action = callback_query.data.split('_')[0]
     user_state = Dispatcher.get_current().current_state(chat=user_id, user=user_id)
     ad_data = await user_state.get_data()
     
@@ -224,5 +233,5 @@ async def process_ad_decision(callback_query: types.CallbackQuery):
         await publish_ad(callback_query, ad_data, user_state, user_id)  # Передаем user_state в publish_ad
         await bot.send_message(user_id, "Ваше объявление одобрено и опубликовано.")
     elif action == "reject":
-        await bot.send_message(user_id, "Ваше объявление отклонено.")
+        await bot.send_message(user_id, "Ваше объявление отклонено. Для уточнения деталей свяжитесь с модератором @mahamerz")
         await user_state.finish()  # Завершаем состояние пользователя

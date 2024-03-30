@@ -7,3 +7,7 @@ class AdForm(StatesGroup):
     waiting_for_photos = State()
     waiting_for_price = State()
     waiting_for_contact_info = State()
+
+
+class ModeratorFSM(StatesGroup):
+    waiting_for_moderation = State() 

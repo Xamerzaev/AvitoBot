@@ -1,3 +1,4 @@
+import re
 from aiogram import types
 from aiogram.dispatcher import FSMContext
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, InputMediaPhoto
@@ -52,9 +53,15 @@ async def start(message: types.Message):
 
 @dp.message_handler(state=AdForm.waiting_for_title)
 async def ad_title(message: types.Message, state: FSMContext):
-    if len(message.text) < 6 or not any(char.isalpha() for char in message.text):
-        await message.answer("Название должно быть длиннее 5 символов и содержать хотя бы одну букву.")
+
+    if len(message.text) > 50:
+        await message.answer("Название должно содержать не более 50 символов. Пожалуйста, введите короткое название.")
         return
+        
+    elif len(message.text) < 4 or not any(char.isalpha() for char in message.text):
+        await message.answer("Название должно быть длиннее 3 символов и содержать хотя бы одну букву.")
+        return
+    
     async with state.proxy() as data:
         data['title'] = message.text
     await AdForm.next()
@@ -69,9 +76,10 @@ async def ad_description_skip(message: types.Message, state: FSMContext):
 
 @dp.message_handler(state=AdForm.waiting_for_description)
 async def ad_description(message: types.Message, state: FSMContext):
-    if len(message.text) > 1024:
-        await message.reply("Описание слишком длинное. Пожалуйста, сократите текст до 1024 символов.")
+    if len(message.text) > 800:
+        await message.reply("Описание слишком длинное. Пожалуйста, сократите текст до 800 символов.")
         return
+
     async with state.proxy() as data:
         data['description'] = message.text
     await AdForm.waiting_for_photos.set()
@@ -126,22 +134,42 @@ async def ad_price(message: types.Message, state: FSMContext):
     if not message.text.isdigit():
         await message.answer("Цена должна содержать только цифры.")
         return
+
+    if len(message.text) > 10:
+        await message.answer("Слишком длинное значение цены. Пожалуйста, введите корректную цену.")
+        return
+
+    # Эта проверка избыточна и никогда не выполнится, потому что выше уже проверяется, что текст состоит только из цифр
+    # Удалите или пересмотрите эту проверку
+    if len(set(message.text)) < 3 and not message.text.isdigit():
+        await message.answer("Цена не должна содержать бесконечных цифр или повторяющихся цифр.")
+        return
+
+    # Используйте переменную price для установления цены в 0, если текст начинается на 0
+    if message.text.startswith('0'):
+        price = '0'
+    else:
+        price = message.text
+
+    # Сохраняем изменённую цену в состояние, используя переменную price
     async with state.proxy() as data:
-        data['price'] = message.text
+        data['price'] = price
+
+    # Переход к следующему состоянию
     await AdForm.next()
-    await message.answer("Введите контактную информацию для связи:")
+    await message.answer("Введите контактную информацию для связи (номер телефона):")
 
 
 async def send_ad_for_moderation(ad_preview, markup, photos=None):
     # Устанавливаем состояние для модератора
     state = Dispatcher.get_current().current_state(chat=MODERATOR_CHAT_ID, user=MODERATOR_CHAT_ID)
     await state.set_state(ModeratorFSM.waiting_for_moderation)
-    
+
     # Если есть фотографии, отправляем их перед текстом объявления
     if photos:
         media_group = [InputMediaPhoto(photo_id) for photo_id in photos]
         await bot.send_media_group(MODERATOR_CHAT_ID, media_group)
-    
+
     await bot.send_message(MODERATOR_CHAT_ID, ad_preview, reply_markup=markup)
 
 
@@ -228,7 +256,7 @@ async def process_ad_decision(callback_query: types.CallbackQuery):
     action = callback_query.data.split('_')[0]
     user_state = Dispatcher.get_current().current_state(chat=user_id, user=user_id)
     ad_data = await user_state.get_data()
-    
+
     if action == "approve":
         await publish_ad(callback_query, ad_data, user_state, user_id)  # Передаем user_state в publish_ad
         await bot.send_message(user_id, "Ваше объявление одобрено и опубликовано.")
